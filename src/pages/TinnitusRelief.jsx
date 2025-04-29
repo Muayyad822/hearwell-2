@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect } from 'react';
+import { Howl } from 'howler';
 import {
   PlayIcon,
   PauseIcon,
   SpeakerWaveIcon,
   SpeakerXMarkIcon,
 } from '@heroicons/react/24/solid';
- 
+
 function TinnitusRelief() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [selectedSound, setSelectedSound] = useState('white');
@@ -64,17 +65,37 @@ function TinnitusRelief() {
   ];
 
   useEffect(() => {
-    // Initialize audio
+    // Clean up previous audio
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = '';
+      audioRef.current = null;
+    }
+
+    // Initialize audio with optimizations for mobile
     const selectedSoundData = sounds.find(s => s.id === selectedSound);
     if (selectedSoundData) {
-      audioRef.current = new Audio(selectedSoundData.url);
-      audioRef.current.loop = true;
-      audioRef.current.volume = volume;
+      // Use Howler.js for better cross-platform audio performance
+      const sound = new Howl({
+        src: [selectedSoundData.url],
+        html5: true, // Force HTML5 Audio to avoid lagging
+        loop: true,
+        volume: volume,
+        preload: true,
+        onload: () => {
+          console.log("Sound loaded successfully");
+        },
+        onloaderror: (id, err) => {
+          console.error("Sound loading error:", err);
+        }
+      });
+      
+      audioRef.current = sound;
     }
 
     return () => {
       if (audioRef.current) {
-        audioRef.current.pause();
+        audioRef.current.unload();
         audioRef.current = null;
       }
     };
@@ -109,9 +130,18 @@ function TinnitusRelief() {
 
   const toggleSound = () => {
     if (isPlaying) {
-      stopSound();
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      setIsPlaying(false);
     } else {
-      startSound();
+      if (audioRef.current) {
+        audioRef.current.play();
+      }
+      setIsPlaying(true);
+      if (timer > 0) {
+        setTimeRemaining(timer * 60);
+      }
     }
   };
 
@@ -260,4 +290,6 @@ function TinnitusRelief() {
 }
 
 export default TinnitusRelief;
+
+
 

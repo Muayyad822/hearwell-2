@@ -68,25 +68,39 @@ function SpeechToText() {
 
   // Initialize speech recognition
   const initializeSpeechRecognition = useCallback(() => {
-    if (!('webkitSpeechRecognition' in window)) {
-      setError('Speech recognition is not supported in this browser. Please try Chrome.');
+    // Check for both standard and webkit prefixed API
+    if (!('SpeechRecognition' in window) && !('webkitSpeechRecognition' in window)) {
+      setError('Speech recognition is not supported in this browser. Please try Chrome or Safari.');
       return;
     }
 
     try {
-      const recognition = new window.webkitSpeechRecognition();
+      // Use the appropriate constructor
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      const recognition = new SpeechRecognition();
+      
+      // Configure for mobile - shorter continuous sessions work better
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = selectedLanguage;
+      recognition.maxAlternatives = 1;
 
+      // Add timeout to restart recognition on mobile (prevents freezing)
+      let recognitionTimeout;
+      
       recognition.onstart = () => {
         setIsListening(true);
         setError(null);
+        // Clear any existing timeout
+        if (recognitionTimeout) clearTimeout(recognitionTimeout);
       };
 
       recognition.onerror = (event) => {
+        console.log("Speech recognition error", event.error);
         if (event.error === 'not-allowed') {
           setError('Microphone permission denied. Please allow microphone access.');
+        } else if (event.error === 'network') {
+          setError('Network error. Please check your connection.');
         } else {
           setError(`Error occurred: ${event.error}`);
         }
@@ -95,6 +109,17 @@ function SpeechToText() {
 
       recognition.onend = () => {
         setIsListening(false);
+        
+        // On mobile, restart recognition after a short delay if still supposed to be listening
+        if (isListening) {
+          recognitionTimeout = setTimeout(() => {
+            try {
+              recognition.start();
+            } catch (e) {
+              console.error("Failed to restart recognition", e);
+            }
+          }, 300);
+        }
       };
 
       recognition.onresult = (event) => {
@@ -121,7 +146,7 @@ function SpeechToText() {
       setError('Failed to initialize speech recognition');
       console.error('Speech recognition initialization error:', err);
     }
-  }, [selectedLanguage]);
+  }, [selectedLanguage, isListening]);
 
   // Check microphone availability
   useEffect(() => {
@@ -393,6 +418,7 @@ ${transcript}
 }
 
 export default SpeechToText;
+
 
 
 
