@@ -39,7 +39,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/muayyad822/soniva.git
+git clone https://github.com/Muayyad822/soniva.git
 cd soniva
 
 # Install dependencies
