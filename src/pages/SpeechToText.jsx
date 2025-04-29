@@ -79,19 +79,20 @@ function SpeechToText() {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       const recognition = new SpeechRecognition();
       
-      // Configure for mobile - shorter continuous sessions work better
-      recognition.continuous = true;
+      // Configure for mobile - use non-continuous mode to prevent duplication
+      recognition.continuous = false;
       recognition.interimResults = true;
       recognition.lang = selectedLanguage;
       recognition.maxAlternatives = 1;
 
-      // Add timeout to restart recognition on mobile (prevents freezing)
+      // Track if we're actively listening to prevent duplicate restarts
+      let isActivelyListening = false;
       let recognitionTimeout;
       
       recognition.onstart = () => {
         setIsListening(true);
+        isActivelyListening = true;
         setError(null);
-        // Clear any existing timeout
         if (recognitionTimeout) clearTimeout(recognitionTimeout);
       };
 
@@ -105,20 +106,27 @@ function SpeechToText() {
           setError(`Error occurred: ${event.error}`);
         }
         setIsListening(false);
+        isActivelyListening = false;
       };
 
       recognition.onend = () => {
-        setIsListening(false);
+        isActivelyListening = false;
         
-        // On mobile, restart recognition after a short delay if still supposed to be listening
-        if (isListening) {
+        // Only restart if we're supposed to be listening and not already restarting
+        if (isListening && !recognitionTimeout) {
           recognitionTimeout = setTimeout(() => {
             try {
-              recognition.start();
+              if (isListening) {
+                recognition.start();
+              }
             } catch (e) {
               console.error("Failed to restart recognition", e);
+            } finally {
+              recognitionTimeout = null;
             }
           }, 300);
+        } else {
+          setIsListening(false);
         }
       };
 
@@ -136,7 +144,10 @@ function SpeechToText() {
         }
 
         if (finalTranscript) {
-          setTranscript((prev) => prev + ' ' + finalTranscript);
+          // Append with space only if there's existing text
+          setTranscript((prev) => {
+            return prev ? prev + ' ' + finalTranscript.trim() : finalTranscript.trim();
+          });
         }
         setInterimResult(interimTranscript);
       };
@@ -175,11 +186,19 @@ function SpeechToText() {
     }
 
     if (isListening) {
+      setIsListening(false);
       recognition?.stop();
     } else {
       setTranscript('');
       setInterimResult('');
-      recognition?.start();
+      setIsListening(true);
+      try {
+        recognition?.start();
+      } catch (err) {
+        console.error("Failed to start recognition", err);
+        setError('Failed to start speech recognition');
+        setIsListening(false);
+      }
     }
   };
 
@@ -418,6 +437,7 @@ ${transcript}
 }
 
 export default SpeechToText;
+
 
 
 
