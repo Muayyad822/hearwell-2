@@ -93,7 +93,7 @@ function SpeechToText() {
     setStats({ words, chars });
   }, [transcript]);
 
-  // Initialize speech recognition
+  // Initialize speech recognition - improved version
   const initializeSpeechRecognition = useCallback(() => {
     if (!('SpeechRecognition' in window) && !('webkitSpeechRecognition' in window)) {
       setError('Speech recognition is not supported in this browser. Please try Chrome or Safari.');
@@ -101,21 +101,29 @@ function SpeechToText() {
     }
 
     try {
+      // Stop any existing recognition instance first
+      if (recognition) {
+        recognition.stop();
+        recognition.onend = null;
+        recognition.onresult = null;
+        recognition.onerror = null;
+      }
+
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      const recognition = new SpeechRecognition();
+      const newRecognition = new SpeechRecognition();
       
       // Mobile-friendly configuration
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = selectedLanguage;
-      recognition.maxAlternatives = 1;
+      newRecognition.continuous = true;
+      newRecognition.interimResults = true;
+      newRecognition.lang = selectedLanguage;
+      newRecognition.maxAlternatives = 1;
 
-      recognition.onstart = () => {
+      newRecognition.onstart = () => {
         setIsListening(true);
         setError(null);
       };
 
-      recognition.onerror = (event) => {
+      newRecognition.onerror = (event) => {
         console.log("Speech recognition error", event.error);
         if (event.error === 'not-allowed') {
           setError('Microphone permission denied. Please allow microphone access.');
@@ -129,10 +137,16 @@ function SpeechToText() {
         setIsListening(false);
       };
 
-      recognition.onend = () => {
+      newRecognition.onend = () => {
+        // Only attempt to restart if we're still supposed to be listening
         if (isListening) {
           try {
-            recognition.start();
+            // Add a small delay before restarting to prevent rapid cycling
+            setTimeout(() => {
+              if (isListening) {
+                newRecognition.start();
+              }
+            }, 300);
           } catch (e) {
             console.error("Failed to restart recognition", e);
             setIsListening(false);
@@ -142,7 +156,7 @@ function SpeechToText() {
         }
       };
 
-      recognition.onresult = (event) => {
+      newRecognition.onresult = (event) => {
         let finalTranscript = '';
         let interimTranscript = '';
 
@@ -163,67 +177,107 @@ function SpeechToText() {
         setInterimResult(interimTranscript);
       };
 
-      return recognition;
+      return newRecognition;
     } catch (err) {
       setError('Failed to initialize speech recognition');
       console.error('Speech recognition initialization error:', err);
       return null;
     }
-  }, [selectedLanguage, isListening]);
+  }, [selectedLanguage, isListening, recognition]);
 
   // Initialize recognition when language changes
   useEffect(() => {
+    // Only reinitialize if we're already listening
     if (isListening) {
-      const newRecognition = initializeSpeechRecognition();
-      if (newRecognition) {
-        setRecognition(newRecognition);
-        newRecognition.start();
-      }
-    }
-    return () => {
+      // First clean up existing resources
       if (recognition) {
+        recognition.onend = null; // Prevent auto-restart
         recognition.stop();
       }
-      stopMicrophone(); // Clean up microphone on unmount or language change
+      
+      // Small delay to ensure cleanup is complete
+      setTimeout(() => {
+        if (isListening) { // Check again in case state changed during timeout
+          const newRecognition = initializeSpeechRecognition();
+          if (newRecognition) {
+            setRecognition(newRecognition);
+            try {
+              newRecognition.start();
+            } catch (err) {
+              console.error("Failed to start recognition after language change", err);
+              setIsListening(false);
+            }
+          }
+        }
+      }, 300);
+    }
+    
+    return () => {
+      if (recognition) {
+        recognition.onend = null; // Prevent auto-restart
+        recognition.stop();
+      }
+      stopMicrophone();
     };
-  }, [selectedLanguage, initializeSpeechRecognition, stopMicrophone, recognition]);
+  }, [selectedLanguage, initializeSpeechRecognition, stopMicrophone, recognition, isListening]);
 
   const toggleListening = async () => {
+    // If currently listening, stop everything
     if (isListening) {
       setIsListening(false);
       if (recognition) {
+        // Remove event handlers to prevent unwanted restarts
+        recognition.onend = null;
         recognition.stop();
       }
-      stopMicrophone(); // Stop the microphone when stopping listening
+      stopMicrophone();
       return;
     }
 
-    // On mobile, we need to request permission through a user gesture
+    // First clean up any existing resources
+    stopMicrophone();
+    if (recognition) {
+      recognition.onend = null;
+      recognition.stop();
+    }
+
     try {
       // Request microphone access and store the stream
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: true,
+        video: false // Explicitly deny video to reduce resource usage
+      });
+      
       mediaStreamRef.current = stream;
       setIsMicrophoneAvailable(true);
       
+      // Clear previous transcript only if starting fresh
       setTranscript('');
       setInterimResult('');
+      
+      // Set listening state before initializing recognition
       setIsListening(true);
       
-      const newRecognition = initializeSpeechRecognition();
-      if (newRecognition) {
-        setRecognition(newRecognition);
-        try {
-          newRecognition.start();
-        } catch (err) {
-          console.error("Failed to start recognition", err);
-          setError('Failed to start speech recognition');
-          setIsListening(false);
-          stopMicrophone(); // Clean up if starting fails
+      // Small delay to ensure state is updated before starting recognition
+      setTimeout(() => {
+        const newRecognition = initializeSpeechRecognition();
+        if (newRecognition) {
+          setRecognition(newRecognition);
+          try {
+            newRecognition.start();
+          } catch (err) {
+            console.error("Failed to start recognition", err);
+            setError('Failed to start speech recognition');
+            setIsListening(false);
+            stopMicrophone();
+          }
         }
-      }
+      }, 100);
     } catch (err) {
+      console.error("Microphone access error:", err);
       setError('Please enable microphone access to use this feature');
       setIsMicrophoneAvailable(false);
+      setIsListening(false);
     }
   };
 
@@ -486,6 +540,9 @@ ${transcript}
 }
 
 export default SpeechToText;
+
+
+
 
 
 
