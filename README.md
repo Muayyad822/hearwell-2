@@ -1,12 +1,52 @@
-# React + Vite
+# Soniva
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+**Soniva** is a modern, low-cost mobile web app that helps people with hearing loss reconnect with the world. Designed for clarity, accessibility, and simplicity, Soniva provides real-time speech-to-text transcription, auditory training, tinnitus relief, and hearing health education — all from your smartphone.
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## 🚀 Features
 
-## Expanding the ESLint configuration
+- **Speech-to-Text**  
+  Converts spoken words into real-time text using voice recognition.
 
-If you are developing a production application, we recommend using TypeScript and enable type-aware lint rules. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+- **Tinnitus Sound Therapy**  
+  Provides soothing ambient sounds for tinnitus relief.
+
+- **Auditory Training**  
+  Engaging audio exercises to improve listening and comprehension skills.
+
+- **Hearing Health Education**  
+  Bite-sized lessons and guidance to support hearing care awareness.
+
+- **Offline & Multilingual Support**  
+  Works without internet and supports multiple languages.
+
+- **Clean, Accessible UI**  
+  Built with a user-friendly interface, optimized for all devices.
+
+---
+
+## 🛠 Tech Stack
+
+- **Frontend:** React + Vite  
+- **Styling:** Tailwind CSS / DaisyUI  
+- **Speech Recognition:** Web Speech API / custom modules  
+- **Audio Playback:** Web Audio API
+
+---
+
+## 📦 Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/muayyad822/soniva.git
+cd soniva
+
+# Install dependencies
+npm install
+
+# Run in development
+npm run dev
+
+# Build for production
+npm run build
