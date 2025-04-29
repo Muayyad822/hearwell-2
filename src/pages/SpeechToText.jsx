@@ -14,9 +14,14 @@ function SpeechToText() {
   const [showSaved, setShowSaved] = useState(false);
   const [copySuccess, setCopySuccess] = useState(false);
 
-  // Available languages
+  // Updated languages array with Nigerian languages prioritized after English
   const languages = [
     { code: 'en-US', name: 'English (US)' },
+    { code: 'en-NG', name: 'English (Nigeria)' },
+    { code: 'ha-NG', name: 'Hausa' },
+    { code: 'yo-NG', name: 'Yorùbá' },
+    { code: 'ig-NG', name: 'Igbo' },
+    // Other international languages
     { code: 'ar-SA', name: 'Arabic' },
     { code: 'es-ES', name: 'Spanish' },
     { code: 'fr-FR', name: 'French' },
@@ -24,6 +29,12 @@ function SpeechToText() {
     { code: 'it-IT', name: 'Italian' },
     { code: 'ja-JP', name: 'Japanese' },
   ];
+
+  // Add language name display in saved transcripts
+  const getLanguageName = (code) => {
+    const language = languages.find(lang => lang.code === code);
+    return language ? language.name : code;
+  };
 
   // Load saved transcripts on mount
   useEffect(() => {
@@ -160,6 +171,8 @@ function SpeechToText() {
   const clearTranscript = () => {
     setTranscript('');
     setInterimResult('');
+    // Remove the draft from localStorage
+    localStorage.removeItem('draft-transcript');
   };
 
   // Save transcript
@@ -215,6 +228,36 @@ ${transcript}
     setShowSaved(false);
   };
 
+  // Update the language selection UI to include language groups
+  const renderLanguageOptions = () => {
+    return (
+      <>
+        <optgroup label="Nigeria">
+          <option value="en-NG">English (Nigeria)</option>
+          <option value="ha-NG">Hausa</option>
+          <option value="yo-NG">Yorùbá</option>
+          <option value="ig-NG">Igbo</option>
+        </optgroup>
+        <optgroup label="International">
+          <option value="en-US">English (US)</option>
+          <option value="ar-SA">Arabic</option>
+          <option value="es-ES">Spanish</option>
+          <option value="fr-FR">French</option>
+          <option value="de-DE">German</option>
+          <option value="it-IT">Italian</option>
+          <option value="ja-JP">Japanese</option>
+        </optgroup>
+      </>
+    );
+  };
+
+  // Add this function to check language support
+  const checkLanguageSupport = (languageCode) => {
+    if (!window.speechSynthesis) return false;
+    return window.speechSynthesis.getVoices()
+      .some(voice => voice.lang.toLowerCase().includes(languageCode.toLowerCase()));
+  };
+
   return (
     <div className="space-y-4 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -228,11 +271,7 @@ ${transcript}
             className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 px-3 py-2 w-full sm:w-auto"
             disabled={isListening}
           >
-            {languages.map((lang) => (
-              <option key={lang.code} value={lang.code}>
-                {lang.name}
-              </option>
-            ))}
+            {renderLanguageOptions()}
           </select>
           <button
             onClick={toggleListening}
@@ -320,7 +359,7 @@ ${transcript}
                         {format(new Date(saved.date), 'PPpp')}
                       </div>
                       <div className="text-sm text-gray-500">
-                        {languages.find(l => l.code === saved.language)?.name} | 
+                        {getLanguageName(saved.language)} | 
                         Words: {saved.stats.words} | 
                         Characters: {saved.stats.chars}
                       </div>
@@ -354,5 +393,8 @@ ${transcript}
 }
 
 export default SpeechToText;
+
+
+
 
 

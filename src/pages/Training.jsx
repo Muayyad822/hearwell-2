@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   ChevronRightIcon, 
@@ -110,37 +110,102 @@ function ExerciseCard({ exercise, index, onStart }) {
 
 function ExerciseModal({ exercise, onClose }) {
   const [isPlaying, setIsPlaying] = useState(false);
-  const [currentStep, setCurrentStep] = useState(1);
+  const [currentSetIndex, setCurrentSetIndex] = useState(0);
   const [score, setScore] = useState(0);
   const [feedback, setFeedback] = useState('');
-  const totalSteps = 5;
+  const [selectedAnswer, setSelectedAnswer] = useState(null);
+  const [audioElement, setAudioElement] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [progress, setProgress] = useState({
+    correct: 0,
+    total: 0,
+    streak: 0
+  });
+
+  useEffect(() => {
+    // Initialize audio and cache it for offline use
+    const audio = new Audio(exercise.audioSets[currentSetIndex].audio);
+    setAudioElement(audio);
+    
+    // Cache audio for offline use
+    if ('caches' in window) {
+      caches.open('audio-cache').then(cache => {
+        cache.add(exercise.audioSets[currentSetIndex].audio);
+      });
+    }
+
+    setIsLoading(false);
+
+    return () => {
+      if (audioElement) {
+        audioElement.pause();
+        audioElement.src = '';
+      }
+    };
+  }, [currentSetIndex, exercise]);
+
+  const handlePlayAudio = () => {
+    if (audioElement) {
+      audioElement.currentTime = 0;
+      audioElement.play();
+      setIsPlaying(true);
+      audioElement.onended = () => setIsPlaying(false);
+    }
+  };
 
   const handleAnswer = (answer) => {
-    // Simulate exercise logic
-    const isCorrect = Math.random() > 0.5;
+    const currentSet = exercise.audioSets[currentSetIndex];
+    const isCorrect = exercise.type === 'word-identification' 
+      ? answer === currentSet.word 
+      : answer === currentSet.sentence;
+
+    setSelectedAnswer(answer);
+    
+    // Update progress
+    setProgress(prev => ({
+      correct: prev.correct + (isCorrect ? 1 : 0),
+      total: prev.total + 1,
+      streak: isCorrect ? prev.streak + 1 : 0
+    }));
+
+    // Set feedback
+    setFeedback(isCorrect ? 
+      `Correct! ${progress.streak > 1 ? `Streak: ${progress.streak + 1}` : ''}` : 
+      `Not quite. The correct answer was: ${exercise.type === 'word-identification' ? currentSet.word : currentSet.sentence}`
+    );
+
+    // Update score
     if (isCorrect) {
-      setScore(prev => prev + 20);
-      setFeedback('Correct! Well done!');
-    } else {
-      setFeedback('Not quite right. Try again!');
+      setScore(prev => prev + (10 + progress.streak));
     }
 
-    if (currentStep < totalSteps) {
-      setCurrentStep(prev => prev + 1);
-    }
+    // Move to next set after delay
+    setTimeout(() => {
+      if (currentSetIndex < exercise.audioSets.length - 1) {
+        setCurrentSetIndex(prev => prev + 1);
+        setSelectedAnswer(null);
+        setFeedback('');
+      } else {
+        // Exercise completed
+        saveProgress();
+      }
+    }, 2000);
   };
 
-  const resetExercise = () => {
-    setCurrentStep(1);
-    setScore(0);
-    setFeedback('');
-    setIsPlaying(false);
-  };
+  const saveProgress = () => {
+    const progressData = {
+      exerciseId: exercise.id,
+      date: new Date().toISOString(),
+      score,
+      progress,
+      difficulty: exercise.difficulty
+    };
 
-  // Add error boundary
-  if (!exercise) {
-    return null;
-  }
+    // Save to localStorage for offline access
+    const savedProgress = JSON.parse(localStorage.getItem('training-progress') || '[]');
+    savedProgress.push(progressData);
+    localStorage.setItem('training-progress', JSON.stringify(savedProgress));
+  };
 
   return (
     <motion.div
@@ -148,141 +213,91 @@ function ExerciseModal({ exercise, onClose }) {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <motion.div
         initial={{ scale: 0.9, y: 20 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.9, y: 20 }}
-        className="bg-white dark:bg-gray-800 rounded-xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
+        className="bg-white dark:bg-gray-800 rounded-xl shadow-xl max-w-2xl w-full"
       >
         {/* Header */}
-        <div className="border-b border-gray-200 dark:border-gray-700 p-4 flex justify-between items-center">
-          <div className="flex items-center gap-3">
-            <div className={`p-2 rounded-lg ${difficultyColors[exercise.difficulty]}`}>
-              {exercise.icon}
-            </div>
-            <div>
-              <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
-                {exercise.title}
-              </h2>
-              <p className="text-sm text-gray-500 dark:text-gray-400">
-                Step {currentStep} of {totalSteps}
-              </p>
-            </div>
+        <div className="border-b border-gray-200 dark:border-gray-700 p-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-semibold">{exercise.title}</h2>
+            <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
+              <XMarkIcon className="h-6 w-6" />
+            </button>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 text-gray-400 hover:text-gray-500 dark:hover:text-gray-300"
-          >
-            <XMarkIcon className="h-6 w-6" />
-          </button>
+          <div className="mt-2">
+            <ProgressBar progress={(currentSetIndex / exercise.audioSets.length) * 100} />
+          </div>
         </div>
 
         {/* Exercise Content */}
-        <div className="p-6 space-y-6">
-          {/* Progress Bar */}
-          <div className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-            <motion.div
-              initial={{ width: 0 }}
-              animate={{ width: `${(currentStep / totalSteps) * 100}%` }}
-              className="h-full bg-primary-500"
-            />
-          </div>
-
-          {/* Exercise Interface */}
-          <div className="space-y-6">
-            <div className="text-center">
-              <div className="mb-4">
-                <motion.div
-                  animate={isPlaying ? { scale: [1, 1.1, 1] } : {}}
-                  transition={{ repeat: Infinity, duration: 1 }}
-                  className="w-24 h-24 bg-primary-100 dark:bg-primary-900 rounded-full mx-auto flex items-center justify-center"
+        <div className="p-6">
+          {isLoading ? (
+            <div className="flex items-center justify-center">
+              <ArrowPathIcon className="h-8 w-8 animate-spin text-primary-500" />
+            </div>
+          ) : (
+            <>
+              {/* Audio Player */}
+              <div className="flex justify-center mb-8">
+                <button
+                  onClick={handlePlayAudio}
+                  disabled={isPlaying}
+                  className="p-4 rounded-full bg-primary-100 hover:bg-primary-200 
+                           transition-colors disabled:opacity-50"
                 >
-                  <SpeakerWaveIcon className="h-12 w-12 text-primary-500" />
-                </motion.div>
+                  {isPlaying ? (
+                    <PauseIcon className="h-8 w-8 text-primary-600" />
+                  ) : (
+                    <PlayIcon className="h-8 w-8 text-primary-600" />
+                  )}
+                </button>
               </div>
-              
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => setIsPlaying(!isPlaying)}
-                className="px-6 py-3 bg-primary-500 hover:bg-primary-600 text-white rounded-lg flex items-center justify-center gap-2 mx-auto"
-              >
-                {isPlaying ? (
-                  <>
-                    <PauseIcon className="h-5 w-5" />
-                    Stop Sound
-                  </>
-                ) : (
-                  <>
-                    <PlayIcon className="h-5 w-5" />
-                    Play Sound
-                  </>
-                )}
-              </motion.button>
-            </div>
 
-            {/* Answer Options */}
-            <div className="grid grid-cols-2 gap-4">
-              {['Left', 'Right', 'Front', 'Back'].map((direction) => (
-                <motion.button
-                  key={direction}
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={() => handleAnswer(direction)}
-                  className="p-4 border-2 border-gray-200 dark:border-gray-700 rounded-lg hover:border-primary-500 dark:hover:border-primary-500 transition-colors"
+              {/* Answer Options */}
+              <div className="grid grid-cols-2 gap-4">
+                {exercise.audioSets[currentSetIndex].options.map((option) => (
+                  <button
+                    key={option}
+                    onClick={() => handleAnswer(option)}
+                    disabled={selectedAnswer !== null}
+                    className={`p-4 rounded-lg border-2 transition-all ${
+                      selectedAnswer === option
+                        ? selectedAnswer === exercise.audioSets[currentSetIndex].word
+                          ? 'border-green-500 bg-green-50'
+                          : 'border-red-500 bg-red-50'
+                        : 'border-gray-200 hover:border-primary-500'
+                    }`}
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
+
+              {/* Feedback */}
+              {feedback && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className={`mt-4 p-4 rounded-lg text-center ${
+                    feedback.includes('Correct')
+                      ? 'bg-green-100 text-green-800'
+                      : 'bg-red-100 text-red-800'
+                  }`}
                 >
-                  {direction}
-                </motion.button>
-              ))}
-            </div>
+                  {feedback}
+                </motion.div>
+              )}
 
-            {/* Feedback */}
-            {feedback && (
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className={`p-4 rounded-lg text-center ${
-                  feedback.includes('Correct') 
-                    ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
-                    : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
-                }`}
-              >
-                {feedback}
-              </motion.div>
-            )}
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="border-t border-gray-200 dark:border-gray-700 p-4 flex justify-between items-center">
-          <div className="flex items-center gap-2">
-            <StarIcon className="h-5 w-5 text-yellow-400" />
-            <span className="font-medium text-gray-900 dark:text-white">
-              Score: {score}
-            </span>
-          </div>
-          <div className="flex gap-3">
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={resetExercise}
-              className="px-4 py-2 flex items-center gap-2 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white"
-            >
-              <ArrowPathIcon className="h-5 w-5" />
-              Reset
-            </motion.button>
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={onClose}
-              className="px-4 py-2 bg-primary-500 hover:bg-primary-600 text-white rounded-lg"
-            >
-              End Exercise
-            </motion.button>
-          </div>
+              {/* Score */}
+              <div className="mt-4 text-center text-gray-600">
+                Score: {score} | Correct: {progress.correct}/{progress.total}
+              </div>
+            </>
+          )}
         </div>
       </motion.div>
     </motion.div>
@@ -294,41 +309,89 @@ function Training() {
 
   const exercises = [
     {
-      title: 'Sound Localization',
-      description: 'Practice identifying the direction of sounds in a 3D environment. Perfect for improving spatial awareness.',
+      id: 'word-quiet',
+      title: 'Word Identification (Quiet)',
+      description: 'Identify spoken words in a quiet environment. Start here if you are new to auditory training.',
       duration: '10 minutes',
       difficulty: 'Beginner',
       xp: 100,
-      progress: 65,
-      icon: <motion.div animate={{ rotate: [0, 360] }} transition={{ duration: 20, repeat: Infinity, ease: "linear" }}>
-              <SpeakerWaveIcon className="h-6 w-6 text-primary-500" />
-            </motion.div>
+      type: 'word-identification',
+      environment: 'quiet',
+      audioSets: [
+        {
+          word: 'house',
+          audio: '/audio/quiet/house.mp3',
+          options: ['house', 'mouse', 'mouth', 'south']
+        },
+        // Add more word sets
+      ],
+      icon: <SpeakerWaveIcon className="h-6 w-6 text-primary-500" />
     },
     {
-      title: 'Frequency Recognition',
-      description: 'Learn to distinguish between different frequencies. Essential for music appreciation and speech understanding.',
+      id: 'word-noise',
+      title: 'Word Identification (Noise)',
+      description: 'Challenge yourself by identifying words with background noise. Great for real-world preparation.',
       duration: '15 minutes',
       difficulty: 'Intermediate',
       xp: 150,
-      progress: 45,
-      icon: <MusicalNoteIcon className="h-6 w-6 text-primary-500" />
-    },
-    {
-      title: 'Speech in Noise',
-      description: 'Improve your ability to understand speech in noisy environments. Practical for social situations.',
-      duration: '20 minutes',
-      difficulty: 'Advanced',
-      xp: 200,
-      progress: 30,
+      type: 'word-identification',
+      environment: 'noisy',
+      audioSets: [
+        {
+          word: 'book',
+          audio: '/audio/noisy/book.mp3',
+          options: ['book', 'look', 'took', 'cook']
+        },
+        // Add more word sets
+      ],
       icon: <ChatBubbleBottomCenterTextIcon className="h-6 w-6 text-primary-500" />
     },
     {
-      title: 'Pattern Recognition',
-      description: 'Train your brain to identify and remember complex sound patterns. Builds cognitive hearing skills.',
-      duration: '12 minutes',
+      id: 'sentence-quiet',
+      title: 'Sentence Comprehension',
+      description: 'Listen and identify complete sentences. Builds overall comprehension skills.',
+      duration: '20 minutes',
       difficulty: 'Intermediate',
-      xp: 120,
-      progress: 80,
+      xp: 200,
+      type: 'sentence',
+      environment: 'quiet',
+      audioSets: [
+        {
+          sentence: 'The weather is nice today',
+          audio: '/audio/quiet/sentence1.mp3',
+          options: [
+            'The weather is nice today',
+            'The weather is rice today',
+            'The leather is nice today',
+            'The weather is mice today'
+          ]
+        },
+        // Add more sentence sets
+      ],
+      icon: <MusicalNoteIcon className="h-6 w-6 text-primary-500" />
+    },
+    {
+      id: 'sentence-noise',
+      title: 'Sentences in Noise',
+      description: 'Master understanding sentences in noisy environments. Simulates real-world conditions.',
+      duration: '20 minutes',
+      difficulty: 'Advanced',
+      xp: 250,
+      type: 'sentence',
+      environment: 'noisy',
+      audioSets: [
+        {
+          sentence: 'Please open the window',
+          audio: '/audio/noisy/sentence1.mp3',
+          options: [
+            'Please open the window',
+            'Please open the meadow',
+            'Please open the pillow',
+            'Please open the shadow'
+          ]
+        },
+        // Add more sentence sets
+      ],
       icon: <ChartBarIcon className="h-6 w-6 text-primary-500" />
     }
   ];
@@ -363,8 +426,8 @@ function Training() {
           whileHover={{ scale: 1.05 }}
           className="flex items-center gap-2 bg-primary-100 dark:bg-primary-900 p-3 rounded-lg"
         >
-          <TrophyIcon className="h-6 w-6 text-primary-500" />
-          <span className="text-primary-600 dark:text-primary-400 font-medium">
+          <TrophyIcon className="h-6 w-6 text-primary-500 text-white" />
+          <span className="text-primary-600 dark:text-primary-400 text-white font-medium">
             Total XP: 1,250
           </span>
         </motion.div>
@@ -393,6 +456,17 @@ function Training() {
   );
 }
 
-export default Training;
+function ProgressBar({ progress }) {
+  return (
+    <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+      <motion.div
+        initial={{ width: 0 }}
+        animate={{ width: `${progress}%` }}
+        className="h-full bg-primary-500"
+      />
+    </div>
+  );
+}
 
+export default Training;
 

@@ -227,8 +227,17 @@ function Home() {
           }}
           className="mb-4"
         >
+          <motion.img
+            src="/soniva.png" 
+            alt="Soniva Logo"
+            className="h-32 mx-auto mb-6" 
+            initial={{ rotate: -10 }}
+            animate={{ rotate: 0 }}
+            transition={{ duration: 0.5 }}
+            whileHover={{ scale: 1.05, rotate: -5 }}
+          />
           <h1 className="text-4xl md:text-5xl text-white font-bold mb-4">
-            Welcome to <GradientText>HearWell</GradientText>
+            Welcome to <GradientText>Soniva</GradientText>
           </h1>
         </motion.div>
         <div className="text-lg text-gray-600 dark:text-gray-300 max-w-2xl mx-auto">
@@ -280,5 +289,6 @@ function Home() {
 }
 
 export default Home;
+
 
 
