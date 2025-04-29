@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { format } from 'date-fns';
 
 function SpeechToText() {
@@ -13,6 +13,30 @@ function SpeechToText() {
   const [stats, setStats] = useState({ words: 0, chars: 0 });
   const [showSaved, setShowSaved] = useState(false);
   const [copySuccess, setCopySuccess] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  const mediaStreamRef = useRef(null); // Add this ref to track the media stream
+
+  // Add this cleanup function
+  const stopMicrophone = useCallback(() => {
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+    }
+  }, []);
+
+  // Add cleanup on component unmount
+  useEffect(() => {
+    return () => {
+      if (recognition) {
+        recognition.stop();
+      }
+      stopMicrophone();
+      // Save draft on unmount
+      if (transcript) {
+        localStorage.setItem('draft-transcript', transcript);
+      }
+    };
+  }, [recognition, transcript, stopMicrophone]);
 
   // Updated languages array with Nigerian languages prioritized after English
   const languages = [
@@ -30,23 +54,26 @@ function SpeechToText() {
     { code: 'ja-JP', name: 'Japanese' },
   ];
 
-  // Add language name display in saved transcripts
-  const getLanguageName = (code) => {
-    const language = languages.find(lang => lang.code === code);
-    return language ? language.name : code;
-  };
-
-  // Load saved transcripts on mount
+  // Check if mobile on mount
   useEffect(() => {
+    setIsMobile(/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent));
+    
+    // Load saved transcripts and draft
     const saved = JSON.parse(localStorage.getItem('transcripts') || '[]');
     setSavedTranscripts(saved);
     
-    // Load draft if exists
     const draft = localStorage.getItem('draft-transcript');
     if (draft) {
       setTranscript(draft);
     }
-  }, []);
+
+    // Check microphone availability (only auto-check on desktop)
+    if (!isMobile) {
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(() => setIsMicrophoneAvailable(true))
+        .catch(() => setIsMicrophoneAvailable(false));
+    }
+  }, [isMobile]);
 
   // Auto-save draft
   useEffect(() => {
@@ -68,63 +95,48 @@ function SpeechToText() {
 
   // Initialize speech recognition
   const initializeSpeechRecognition = useCallback(() => {
-    // Check for both standard and webkit prefixed API
     if (!('SpeechRecognition' in window) && !('webkitSpeechRecognition' in window)) {
       setError('Speech recognition is not supported in this browser. Please try Chrome or Safari.');
-      return;
+      return null;
     }
 
     try {
-      // Use the appropriate constructor
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       const recognition = new SpeechRecognition();
       
-      // Configure for mobile - use non-continuous mode to prevent duplication
-      recognition.continuous = false;
+      // Mobile-friendly configuration
+      recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = selectedLanguage;
       recognition.maxAlternatives = 1;
 
-      // Track if we're actively listening to prevent duplicate restarts
-      let isActivelyListening = false;
-      let recognitionTimeout;
-      
       recognition.onstart = () => {
         setIsListening(true);
-        isActivelyListening = true;
         setError(null);
-        if (recognitionTimeout) clearTimeout(recognitionTimeout);
       };
 
       recognition.onerror = (event) => {
         console.log("Speech recognition error", event.error);
         if (event.error === 'not-allowed') {
           setError('Microphone permission denied. Please allow microphone access.');
+        } else if (event.error === 'audio-capture') {
+          setError('No microphone found. Please ensure a microphone is connected.');
         } else if (event.error === 'network') {
           setError('Network error. Please check your connection.');
         } else {
           setError(`Error occurred: ${event.error}`);
         }
         setIsListening(false);
-        isActivelyListening = false;
       };
 
       recognition.onend = () => {
-        isActivelyListening = false;
-        
-        // Only restart if we're supposed to be listening and not already restarting
-        if (isListening && !recognitionTimeout) {
-          recognitionTimeout = setTimeout(() => {
-            try {
-              if (isListening) {
-                recognition.start();
-              }
-            } catch (e) {
-              console.error("Failed to restart recognition", e);
-            } finally {
-              recognitionTimeout = null;
-            }
-          }, 300);
+        if (isListening) {
+          try {
+            recognition.start();
+          } catch (e) {
+            console.error("Failed to restart recognition", e);
+            setIsListening(false);
+          }
         } else {
           setIsListening(false);
         }
@@ -144,7 +156,6 @@ function SpeechToText() {
         }
 
         if (finalTranscript) {
-          // Append with space only if there's existing text
           setTranscript((prev) => {
             return prev ? prev + ' ' + finalTranscript.trim() : finalTranscript.trim();
           });
@@ -152,53 +163,67 @@ function SpeechToText() {
         setInterimResult(interimTranscript);
       };
 
-      setRecognition(recognition);
+      return recognition;
     } catch (err) {
       setError('Failed to initialize speech recognition');
       console.error('Speech recognition initialization error:', err);
+      return null;
     }
   }, [selectedLanguage, isListening]);
 
-  // Check microphone availability
-  useEffect(() => {
-    navigator.mediaDevices.getUserMedia({ audio: true })
-      .then(() => setIsMicrophoneAvailable(true))
-      .catch(() => {
-        setError('Microphone access is required');
-        setIsMicrophoneAvailable(false);
-      });
-  }, []);
-
   // Initialize recognition when language changes
   useEffect(() => {
-    initializeSpeechRecognition();
+    if (isListening) {
+      const newRecognition = initializeSpeechRecognition();
+      if (newRecognition) {
+        setRecognition(newRecognition);
+        newRecognition.start();
+      }
+    }
     return () => {
       if (recognition) {
         recognition.stop();
       }
+      stopMicrophone(); // Clean up microphone on unmount or language change
     };
-  }, [selectedLanguage, initializeSpeechRecognition]);
+  }, [selectedLanguage, initializeSpeechRecognition, stopMicrophone, recognition]);
 
-  const toggleListening = () => {
-    if (!isMicrophoneAvailable) {
-      setError('Please enable microphone access to use this feature');
+  const toggleListening = async () => {
+    if (isListening) {
+      setIsListening(false);
+      if (recognition) {
+        recognition.stop();
+      }
+      stopMicrophone(); // Stop the microphone when stopping listening
       return;
     }
 
-    if (isListening) {
-      setIsListening(false);
-      recognition?.stop();
-    } else {
+    // On mobile, we need to request permission through a user gesture
+    try {
+      // Request microphone access and store the stream
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      setIsMicrophoneAvailable(true);
+      
       setTranscript('');
       setInterimResult('');
       setIsListening(true);
-      try {
-        recognition?.start();
-      } catch (err) {
-        console.error("Failed to start recognition", err);
-        setError('Failed to start speech recognition');
-        setIsListening(false);
+      
+      const newRecognition = initializeSpeechRecognition();
+      if (newRecognition) {
+        setRecognition(newRecognition);
+        try {
+          newRecognition.start();
+        } catch (err) {
+          console.error("Failed to start recognition", err);
+          setError('Failed to start speech recognition');
+          setIsListening(false);
+          stopMicrophone(); // Clean up if starting fails
+        }
       }
+    } catch (err) {
+      setError('Please enable microphone access to use this feature');
+      setIsMicrophoneAvailable(false);
     }
   };
 
@@ -206,7 +231,7 @@ function SpeechToText() {
     try {
       await navigator.clipboard.writeText(transcript);
       setCopySuccess(true);
-      setTimeout(() => setCopySuccess(false), 2000); // Hide success message after 2 seconds
+      setTimeout(() => setCopySuccess(false), 2000);
     } catch (err) {
       setError('Failed to copy text to clipboard');
     }
@@ -215,29 +240,37 @@ function SpeechToText() {
   const clearTranscript = () => {
     setTranscript('');
     setInterimResult('');
-    // Remove the draft from localStorage
     localStorage.removeItem('draft-transcript');
   };
 
-  // Save transcript
   const saveTranscript = () => {
-    const newTranscript = {
-      id: Date.now(),
-      text: transcript,
-      date: new Date().toISOString(),
-      language: selectedLanguage,
-      stats: { ...stats }
-    };
-    
-    const updatedTranscripts = [newTranscript, ...savedTranscripts];
-    setSavedTranscripts(updatedTranscripts);
-    localStorage.setItem('transcripts', JSON.stringify(updatedTranscripts));
-    localStorage.removeItem('draft-transcript');
-    setTranscript('');
-    setInterimResult('');
+    try {
+      const newTranscript = {
+        id: Date.now(),
+        text: transcript,
+        date: new Date().toISOString(),
+        language: selectedLanguage,
+        stats: { ...stats }
+      };
+      
+      const updatedTranscripts = [newTranscript, ...savedTranscripts];
+      
+      // Check storage limits (5MB is typical for mobile)
+      if (JSON.stringify(updatedTranscripts).length > 4.5 * 1024 * 1024) {
+        setError('Storage limit reached. Please delete some saved transcripts.');
+        return;
+      }
+      
+      setSavedTranscripts(updatedTranscripts);
+      localStorage.setItem('transcripts', JSON.stringify(updatedTranscripts));
+      localStorage.removeItem('draft-transcript');
+      setTranscript('');
+      setInterimResult('');
+    } catch (err) {
+      setError('Failed to save transcript. Storage might be full.');
+    }
   };
 
-  // Export transcript
   const exportTranscript = () => {
     const content = `
 Transcript
@@ -258,21 +291,23 @@ ${transcript}
     URL.revokeObjectURL(url);
   };
 
-  // Delete saved transcript
   const deleteSavedTranscript = (id) => {
     const updated = savedTranscripts.filter(t => t.id !== id);
     setSavedTranscripts(updated);
     localStorage.setItem('transcripts', JSON.stringify(updated));
   };
 
-  // Load saved transcript
   const loadSavedTranscript = (saved) => {
     setTranscript(saved.text);
     setSelectedLanguage(saved.language);
     setShowSaved(false);
   };
 
-  // Update the language selection UI to include language groups
+  const getLanguageName = (code) => {
+    const language = languages.find(lang => lang.code === code);
+    return language ? language.name : code;
+  };
+
   const renderLanguageOptions = () => {
     return (
       <>
@@ -295,13 +330,6 @@ ${transcript}
     );
   };
 
-  // Add this function to check language support
-  const checkLanguageSupport = (languageCode) => {
-    if (!window.speechSynthesis) return false;
-    return window.speechSynthesis.getVoices()
-      .some(voice => voice.lang.toLowerCase().includes(languageCode.toLowerCase()));
-  };
-
   return (
     <div className="space-y-4 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -319,17 +347,38 @@ ${transcript}
           </select>
           <button
             onClick={toggleListening}
-            disabled={!isMicrophoneAvailable}
+            disabled={!isMicrophoneAvailable && !isMobile}
             className={`px-4 py-2 rounded-lg ${
               isListening
                 ? 'bg-red-500 hover:bg-red-600'
                 : 'bg-primary-500 hover:bg-primary-600'
             } text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors w-full sm:w-auto`}
           >
-            {isListening ? 'Stop' : 'Start'} Listening
+            {isListening ? (
+              <>
+                <span className="inline-block mr-2">Listening...</span>
+                <span className="inline-flex items-center">
+                  <span className="animate-ping absolute h-3 w-3 rounded-full bg-red-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                </span>
+              </>
+            ) : (
+              'Start Listening'
+            )}
           </button>
         </div>
       </div>
+
+      {isMobile && (
+        <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 mb-4">
+          <p>For best results on mobile:</p>
+          <ul className="list-disc pl-5 mt-1">
+            <li>Use Chrome or Safari</li>
+            <li>Hold your phone close to your mouth</li>
+            <li>Speak clearly in a quiet environment</li>
+          </ul>
+        </div>
+      )}
 
       {error && (
         <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
@@ -437,9 +486,6 @@ ${transcript}
 }
 
 export default SpeechToText;
-
-
-
 
 
 
