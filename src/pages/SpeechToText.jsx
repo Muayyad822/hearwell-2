@@ -1,12 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { format } from 'date-fns';
 
+// Helper function for capability detection
+const isRecognitionSupported = () => 'webkitSpeechRecognition' in window;
+
 // Offline speech recognition fallback
 class OfflineSpeechRecognizer {
   constructor(lang = 'en-US') {
     this.lang = lang;
     this.recognition = null;
-    this.isListening = false;
+    this.isListeningRef = { current: false }; // Using ref pattern for consistent state
     this.interimTranscript = '';
     this.finalTranscript = '';
     this.listeners = {
@@ -14,10 +17,11 @@ class OfflineSpeechRecognizer {
       error: [],
       end: []
     };
+    this.restartTimeout = null;
   }
 
   start() {
-    if (!('webkitSpeechRecognition' in window)) {
+    if (!isRecognitionSupported()) {
       this.emitError('offline_unsupported', 'Offline recognition not supported');
       return;
     }
@@ -54,18 +58,27 @@ class OfflineSpeechRecognizer {
     };
 
     this.recognition.onend = () => {
-      if (this.isListening) {
-        this.recognition.start(); // Continue listening
+      if (this.isListeningRef.current) {
+        // Debounce restart to prevent rapid cycling
+        this.restartTimeout = setTimeout(() => {
+          if (this.isListeningRef.current) {
+            this.recognition.start();
+          }
+        }, 300);
       }
       this.emitEnd();
     };
 
-    this.isListening = true;
+    this.isListeningRef.current = true;
     this.recognition.start();
   }
 
   stop() {
-    this.isListening = false;
+    this.isListeningRef.current = false;
+    if (this.restartTimeout) {
+      clearTimeout(this.restartTimeout);
+      this.restartTimeout = null;
+    }
     if (this.recognition) {
       this.recognition.stop();
     }
@@ -99,9 +112,20 @@ class OfflineSpeechRecognizer {
   }
 }
 
+// More reliable mobile detection
+const checkIsMobile = () => {
+  // Check for touch support first
+  const hasTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+  
+  // Then check screen size and user agent
+  const smallScreen = window.matchMedia('(max-width: 768px)').matches;
+  const mobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+  
+  return hasTouch && (smallScreen || mobileUA);
+};
+
 function SpeechToText() {
   // State management
-  const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [interimResult, setInterimResult] = useState('');
   const [error, setError] = useState(null);
@@ -114,7 +138,8 @@ function SpeechToText() {
   const [isOffline, setIsOffline] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
 
-  // Refs
+  // Refs for stable references in callbacks
+  const isListeningRef = useRef(false);
   const recognitionRef = useRef(null);
   const mediaStreamRef = useRef(null);
   const offlineRecognizerRef = useRef(null);
@@ -134,10 +159,30 @@ function SpeechToText() {
     { code: 'ja-JP', name: 'Japanese' },
   ];
 
+  // Cleanup all recognition resources
+  const cleanupRecognition = useCallback(() => {
+    if (offlineRecognizerRef.current) {
+      offlineRecognizerRef.current.stop();
+      offlineRecognizerRef.current = null;
+    }
+    
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
+    
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+    }
+    
+    isListeningRef.current = false;
+  }, []);
+
   // Initialize component
   useEffect(() => {
-    // Check device type
-    setIsMobile(/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent));
+    // Check device type using reliable method
+    setIsMobile(checkIsMobile());
     
     // Load saved transcripts
     const saved = JSON.parse(localStorage.getItem('transcripts') || '[]');
@@ -156,9 +201,9 @@ function SpeechToText() {
     return () => {
       window.removeEventListener('online', handleOnlineStatus);
       window.removeEventListener('offline', handleOnlineStatus);
-      stopRecognition();
+      cleanupRecognition();
     };
-  }, []);
+  }, [cleanupRecognition]);
 
   // Auto-save draft
   useEffect(() => {
@@ -177,14 +222,13 @@ function SpeechToText() {
 
   // Initialize speech recognition
   const initializeRecognition = useCallback(() => {
-    // Clean up existing instances
-    stopRecognition();
+    cleanupRecognition();
 
     if (isOffline) {
       // Offline mode
       offlineRecognizerRef.current = new OfflineSpeechRecognizer(selectedLanguage);
       
-      offlineRecognizerRef.current.addListener('result', ({ interimTranscript, finalTranscript, fullTranscript }) => {
+      offlineRecognizerRef.current.addListener('result', ({ interimTranscript, finalTranscript }) => {
         setInterimResult(interimTranscript);
         if (finalTranscript) {
           setTranscript(prev => prev + ' ' + finalTranscript);
@@ -193,13 +237,13 @@ function SpeechToText() {
       
       offlineRecognizerRef.current.addListener('error', ({ error }) => {
         setError(`Offline recognition error: ${error}`);
-        setIsListening(false);
+        isListeningRef.current = false;
       });
       
       return true;
     } else {
       // Online mode
-      if (!('webkitSpeechRecognition' in window)) {
+      if (!isRecognitionSupported()) {
         setError('Speech recognition not supported in this browser');
         return false;
       }
@@ -234,23 +278,24 @@ function SpeechToText() {
         } else {
           setError(`Recognition error: ${event.error}`);
         }
-        setIsListening(false);
+        isListeningRef.current = false;
       };
 
       recognition.onend = () => {
-        if (isListening) recognition.start(); // Auto-restart if still listening
+        if (isListeningRef.current) {
+          setTimeout(() => recognition.start(), 300);
+        }
       };
 
       recognitionRef.current = recognition;
       return true;
     }
-  }, [selectedLanguage, isListening, isOffline]);
+  }, [selectedLanguage, isOffline, cleanupRecognition]);
 
   // Start/stop recognition
   const toggleListening = async () => {
-    if (isListening) {
-      stopRecognition();
-      setIsListening(false);
+    if (isListeningRef.current) {
+      cleanupRecognition();
       return;
     }
 
@@ -262,12 +307,12 @@ function SpeechToText() {
       
       // Initialize and start recognition
       if (initializeRecognition()) {
+        isListeningRef.current = true;
         if (isOffline) {
           offlineRecognizerRef.current.start();
         } else {
           recognitionRef.current.start();
         }
-        setIsListening(true);
         setError(null);
       }
     } catch (err) {
@@ -275,22 +320,6 @@ function SpeechToText() {
       setIsMicrophoneAvailable(false);
     }
   };
-
-  // Clean up recognition
-  const stopRecognition = useCallback(() => {
-    if (isOffline && offlineRecognizerRef.current) {
-      offlineRecognizerRef.current.stop();
-      offlineRecognizerRef.current = null;
-    } else if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
-    }
-    
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      mediaStreamRef.current = null;
-    }
-  }, [isOffline]);
 
   // UI helper functions
   const copyToClipboard = async () => {
@@ -377,20 +406,20 @@ function SpeechToText() {
             value={selectedLanguage}
             onChange={(e) => setSelectedLanguage(e.target.value)}
             className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 px-3 py-2 w-full sm:w-auto"
-            disabled={isListening}
+            disabled={isListeningRef.current}
           >
             {renderLanguageOptions()}
           </select>
           <button
             onClick={toggleListening}
             className={`px-4 py-2 rounded-lg ${
-              isListening
+              isListeningRef.current 
                 ? 'bg-red-500 hover:bg-red-600'
                 : 'bg-primary-500 hover:bg-primary-600'
             } text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors w-full sm:w-auto`}
             disabled={!isMicrophoneAvailable && !isMobile}
           >
-            {isListening ? (
+            {isListeningRef.current ? (
               <>
                 <span className="inline-block mr-2">Listening...</span>
                 <span className="inline-flex items-center">
