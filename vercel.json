@@ -8,6 +8,15 @@
           "value": "microphone=()"
         }
       ]
+    },
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        {
+          "key": "Permissions-Policy",
+          "value": "microphone=()"
+        }
+        ]
     }
   ],
   "rewrites": [
@@ -16,4 +25,4 @@
       "destination": "/"
     }
   ]
-  
+}
