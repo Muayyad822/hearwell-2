@@ -1,89 +1,131 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { format } from 'date-fns';
 
-// Add this component
-function MobileRecognitionErrorBoundary({ children }) {
-  const [hasError, setHasError] = useState(false);
-
-  useEffect(() => {
-    const listener = () => {
-      if (window.innerWidth <= 768) {
-        setHasError(!('webkitSpeechRecognition' in window));
-      }
+// Offline speech recognition fallback
+class OfflineSpeechRecognizer {
+  constructor(lang = 'en-US') {
+    this.lang = lang;
+    this.recognition = null;
+    this.isListening = false;
+    this.interimTranscript = '';
+    this.finalTranscript = '';
+    this.listeners = {
+      result: [],
+      error: [],
+      end: []
     };
-    listener();
-    window.addEventListener('resize', listener);
-    return () => window.removeEventListener('resize', listener);
-  }, []);
-
-  if (hasError) {
-    return (
-      <div className="mobile-error p-4 bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700">
-        <h3 className="font-bold">Mobile Compatibility Notice</h3>
-        <p>For best results on your device:</p>
-        <ol className="list-decimal pl-5 mt-1">
-          <li>Use Chrome browser</li>
-          <li>Ensure microphone permissions are granted</li>
-          <li>Refresh the page after granting permissions</li>
-        </ol>
-        <button 
-          onClick={() => window.location.reload()}
-          className="mt-2 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
-        >
-          Refresh Browser
-        </button>
-      </div>
-    );
   }
 
-  return children;
+  start() {
+    if (!('webkitSpeechRecognition' in window)) {
+      this.emitError('offline_unsupported', 'Offline recognition not supported');
+      return;
+    }
+
+    this.recognition = new window.webkitSpeechRecognition();
+    this.recognition.continuous = true;
+    this.recognition.interimResults = true;
+    this.recognition.lang = this.lang;
+
+    this.recognition.onresult = (event) => {
+      let interim = '';
+      let final = '';
+      
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          final += transcript + ' ';
+        } else {
+          interim += transcript;
+        }
+      }
+      
+      this.interimTranscript = interim;
+      this.finalTranscript += final;
+      this.emitResult({
+        interimTranscript: interim,
+        finalTranscript: final,
+        fullTranscript: this.finalTranscript + interim
+      });
+    };
+
+    this.recognition.onerror = (event) => {
+      this.emitError(event.error, 'Recognition error');
+    };
+
+    this.recognition.onend = () => {
+      if (this.isListening) {
+        this.recognition.start(); // Continue listening
+      }
+      this.emitEnd();
+    };
+
+    this.isListening = true;
+    this.recognition.start();
+  }
+
+  stop() {
+    this.isListening = false;
+    if (this.recognition) {
+      this.recognition.stop();
+    }
+  }
+
+  setLang(lang) {
+    this.lang = lang;
+    if (this.recognition) {
+      this.recognition.lang = lang;
+    }
+  }
+
+  addListener(type, callback) {
+    this.listeners[type].push(callback);
+  }
+
+  removeListener(type, callback) {
+    this.listeners[type] = this.listeners[type].filter(cb => cb !== callback);
+  }
+
+  emitResult(data) {
+    this.listeners.result.forEach(cb => cb(data));
+  }
+
+  emitError(error, message) {
+    this.listeners.error.forEach(cb => cb({ error, message }));
+  }
+
+  emitEnd() {
+    this.listeners.end.forEach(cb => cb());
+  }
 }
 
 function SpeechToText() {
+  // State management
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
-  const [recognition, setRecognition] = useState(null);
+  const [interimResult, setInterimResult] = useState('');
   const [error, setError] = useState(null);
   const [selectedLanguage, setSelectedLanguage] = useState('en-US');
-  const [interimResult, setInterimResult] = useState('');
   const [isMicrophoneAvailable, setIsMicrophoneAvailable] = useState(false);
   const [savedTranscripts, setSavedTranscripts] = useState([]);
   const [stats, setStats] = useState({ words: 0, chars: 0 });
   const [showSaved, setShowSaved] = useState(false);
   const [copySuccess, setCopySuccess] = useState(false);
+  const [isOffline, setIsOffline] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
-  const mediaStreamRef = useRef(null); // Add this ref to track the media stream
 
-  // Add this cleanup function
-  const stopMicrophone = useCallback(() => {
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      mediaStreamRef.current = null;
-    }
-  }, []);
+  // Refs
+  const recognitionRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const offlineRecognizerRef = useRef(null);
 
-  // Add cleanup on component unmount
-  useEffect(() => {
-    return () => {
-      if (recognition) {
-        recognition.stop();
-      }
-      stopMicrophone();
-      // Save draft on unmount
-      if (transcript) {
-        localStorage.setItem('draft-transcript', transcript);
-      }
-    };
-  }, [recognition, transcript, stopMicrophone]);
-
-  // Updated languages array with Nigerian languages prioritized after English
+  // Languages supported
   const languages = [
     { code: 'en-US', name: 'English (US)' },
     { code: 'en-NG', name: 'English (Nigeria)' },
     { code: 'ha-NG', name: 'Hausa' },
     { code: 'yo-NG', name: 'Yorùbá' },
     { code: 'ig-NG', name: 'Igbo' },
-    // Other international languages
     { code: 'ar-SA', name: 'Arabic' },
     { code: 'es-ES', name: 'Spanish' },
     { code: 'fr-FR', name: 'French' },
@@ -92,36 +134,38 @@ function SpeechToText() {
     { code: 'ja-JP', name: 'Japanese' },
   ];
 
-  // Check if mobile on mount
+  // Initialize component
   useEffect(() => {
+    // Check device type
     setIsMobile(/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent));
     
-    // Load saved transcripts and draft
+    // Load saved transcripts
     const saved = JSON.parse(localStorage.getItem('transcripts') || '[]');
     setSavedTranscripts(saved);
     
+    // Load draft if exists
     const draft = localStorage.getItem('draft-transcript');
-    if (draft) {
-      setTranscript(draft);
-    }
+    if (draft) setTranscript(draft);
 
-    // Check microphone availability (only auto-check on desktop)
-    if (!isMobile) {
-      navigator.mediaDevices.getUserMedia({ audio: true })
-        .then(() => setIsMicrophoneAvailable(true))
-        .catch(() => setIsMicrophoneAvailable(false));
-    }
-  }, [isMobile]);
+    // Check online status
+    const handleOnlineStatus = () => setIsOffline(!navigator.onLine);
+    window.addEventListener('online', handleOnlineStatus);
+    window.addEventListener('offline', handleOnlineStatus);
+    handleOnlineStatus();
+
+    return () => {
+      window.removeEventListener('online', handleOnlineStatus);
+      window.removeEventListener('offline', handleOnlineStatus);
+      stopRecognition();
+    };
+  }, []);
 
   // Auto-save draft
   useEffect(() => {
-    const saveInterval = setInterval(() => {
-      if (transcript) {
-        localStorage.setItem('draft-transcript', transcript);
-      }
+    const timer = setInterval(() => {
+      if (transcript) localStorage.setItem('draft-transcript', transcript);
     }, 5000);
-    
-    return () => clearInterval(saveInterval);
+    return () => clearInterval(timer);
   }, [transcript]);
 
   // Update statistics
@@ -131,229 +175,131 @@ function SpeechToText() {
     setStats({ words, chars });
   }, [transcript]);
 
-  // Initialize speech recognition - improved version
-  const initializeSpeechRecognition = useCallback(() => {
-    // Add this check first
-    if (typeof window === 'undefined' || 
-        !(window.SpeechRecognition || window.webkitSpeechRecognition)) {
-      setError('Speech API not available in this environment');
-      return null;
-    }
+  // Initialize speech recognition
+  const initializeRecognition = useCallback(() => {
+    // Clean up existing instances
+    stopRecognition();
 
-    try {
-      // Stop any existing recognition instance first
-      if (recognition) {
-        recognition.stop();
-        recognition.onend = null;
-        recognition.onresult = null;
-        recognition.onerror = null;
-        recognition.onabort = null;
+    if (isOffline) {
+      // Offline mode
+      offlineRecognizerRef.current = new OfflineSpeechRecognizer(selectedLanguage);
+      
+      offlineRecognizerRef.current.addListener('result', ({ interimTranscript, finalTranscript, fullTranscript }) => {
+        setInterimResult(interimTranscript);
+        if (finalTranscript) {
+          setTranscript(prev => prev + ' ' + finalTranscript);
+        }
+      });
+      
+      offlineRecognizerRef.current.addListener('error', ({ error }) => {
+        setError(`Offline recognition error: ${error}`);
+        setIsListening(false);
+      });
+      
+      return true;
+    } else {
+      // Online mode
+      if (!('webkitSpeechRecognition' in window)) {
+        setError('Speech recognition not supported in this browser');
+        return false;
       }
 
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      const newRecognition = new SpeechRecognition();
-      
-      // Mobile-specific configuration
-      newRecognition.continuous = false; // Changed from true to false for mobile
-      newRecognition.interimResults = true;
-      newRecognition.lang = selectedLanguage;
-      newRecognition.maxAlternatives = 1;
+      const recognition = new window.webkitSpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = selectedLanguage;
 
-      newRecognition.onstart = () => {
-        setIsListening(true);
-        setError(null);
-      };
-
-      // Add abort handler
-      newRecognition.onabort = () => {
-        if (isListening) { // Only restart if we should be listening
-          setTimeout(() => {
-            try {
-              newRecognition.start();
-            } catch (e) {
-              console.log("Restart after abort failed", e);
-            }
-          }, 300);
+      recognition.onresult = (event) => {
+        let interim = '';
+        let final = '';
+        
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            final += transcript + ' ';
+          } else {
+            interim += transcript;
+          }
+        }
+        
+        setInterimResult(interim);
+        if (final) {
+          setTranscript(prev => prev + ' ' + final);
         }
       };
 
-      newRecognition.onerror = (event) => {
-        console.log("Speech recognition error", event.error);
+      recognition.onerror = (event) => {
         if (event.error === 'not-allowed') {
-          setError('Microphone permission denied. Please allow microphone access.');
-        } else if (event.error === 'audio-capture') {
-          setError('No microphone found. Please ensure a microphone is connected.');
-        } else if (event.error === 'network') {
-          setError('Network error. Please check your connection.');
+          setError('Microphone access denied. Please allow microphone permissions.');
         } else {
-          setError(`Error occurred: ${event.error}`);
+          setError(`Recognition error: ${event.error}`);
         }
         setIsListening(false);
       };
 
-      newRecognition.onend = () => {
-        // Only attempt to restart if we're still supposed to be listening
-        if (isListening) {
-          try {
-            // Add a small delay before restarting to prevent rapid cycling
-            setTimeout(() => {
-              if (isListening) {
-                newRecognition.start();
-              }
-            }, 300);
-          } catch (e) {
-            console.error("Failed to restart recognition", e);
-            setIsListening(false);
-          }
-        } else {
-          setIsListening(false);
-        }
+      recognition.onend = () => {
+        if (isListening) recognition.start(); // Auto-restart if still listening
       };
 
-      newRecognition.onresult = (event) => {
-        let finalTranscript = '';
-        let interimTranscript = '';
-
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            finalTranscript += transcript;
-          } else {
-            interimTranscript += transcript;
-          }
-        }
-
-        if (finalTranscript) {
-          setTranscript((prev) => {
-            return prev ? prev + ' ' + finalTranscript.trim() : finalTranscript.trim();
-          });
-        }
-        setInterimResult(interimTranscript);
-      };
-
-      return newRecognition;
-    } catch (err) {
-      setError('Failed to initialize speech recognition');
-      console.error('Speech recognition initialization error:', err);
-      return null;
+      recognitionRef.current = recognition;
+      return true;
     }
-  }, [selectedLanguage, isListening, recognition]);
+  }, [selectedLanguage, isListening, isOffline]);
 
-  // Initialize recognition when language changes
-  useEffect(() => {
-    // Only reinitialize if we're already listening
-    if (isListening) {
-      // First clean up existing resources
-      if (recognition) {
-        recognition.onend = null; // Prevent auto-restart
-        recognition.stop();
-      }
-      
-      // Small delay to ensure cleanup is complete
-      setTimeout(() => {
-        if (isListening) { // Check again in case state changed during timeout
-          const newRecognition = initializeSpeechRecognition();
-          if (newRecognition) {
-            setRecognition(newRecognition);
-            try {
-              newRecognition.start();
-            } catch (err) {
-              console.error("Failed to start recognition after language change", err);
-              setIsListening(false);
-            }
-          }
-        }
-      }, 300);
-    }
-    
-    return () => {
-      if (recognition) {
-        recognition.onend = null; // Prevent auto-restart
-        recognition.stop();
-      }
-      stopMicrophone();
-    };
-  }, [selectedLanguage, initializeSpeechRecognition, stopMicrophone, recognition, isListening]);
-
+  // Start/stop recognition
   const toggleListening = async () => {
-    // Add mobile-specific pre-checks
-    if (isMobile) {
-      try {
-        // This triggers the permission dialog if needed
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach(track => track.stop());
-      } catch (err) {
-        setError('Microphone access denied. Please enable in browser settings.');
-        return;
-      }
-    }
-
-    // If currently listening, stop everything
     if (isListening) {
+      stopRecognition();
       setIsListening(false);
-      if (recognition) {
-        // Remove event handlers to prevent unwanted restarts
-        recognition.onend = null;
-        recognition.stop();
-      }
-      stopMicrophone();
       return;
     }
 
-    // First clean up any existing resources
-    stopMicrophone();
-    if (recognition) {
-      recognition.onend = null;
-      recognition.stop();
-    }
-
+    // Request microphone permission
     try {
-      // Request microphone access and store the stream
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: true,
-        video: false // Explicitly deny video to reduce resource usage
-      });
-      
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
       setIsMicrophoneAvailable(true);
       
-      // Clear previous transcript only if starting fresh
-      setTranscript('');
-      setInterimResult('');
-      
-      // Set listening state before initializing recognition
-      setIsListening(true);
-      
-      // Small delay to ensure state is updated before starting recognition
-      setTimeout(() => {
-        const newRecognition = initializeSpeechRecognition();
-        if (newRecognition) {
-          setRecognition(newRecognition);
-          try {
-            newRecognition.start();
-          } catch (err) {
-            console.error("Failed to start recognition", err);
-            setError('Failed to start speech recognition');
-            setIsListening(false);
-            stopMicrophone();
-          }
+      // Initialize and start recognition
+      if (initializeRecognition()) {
+        if (isOffline) {
+          offlineRecognizerRef.current.start();
+        } else {
+          recognitionRef.current.start();
         }
-      }, 100);
+        setIsListening(true);
+        setError(null);
+      }
     } catch (err) {
-      console.error("Microphone access error:", err);
-      setError('Please enable microphone access to use this feature');
+      setError('Could not access microphone. Please ensure permissions are granted.');
       setIsMicrophoneAvailable(false);
-      setIsListening(false);
     }
   };
 
+  // Clean up recognition
+  const stopRecognition = useCallback(() => {
+    if (isOffline && offlineRecognizerRef.current) {
+      offlineRecognizerRef.current.stop();
+      offlineRecognizerRef.current = null;
+    } else if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
+    
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+    }
+  }, [isOffline]);
+
+  // UI helper functions
   const copyToClipboard = async () => {
     try {
       await navigator.clipboard.writeText(transcript);
       setCopySuccess(true);
       setTimeout(() => setCopySuccess(false), 2000);
     } catch (err) {
-      setError('Failed to copy text to clipboard');
+      setError('Failed to copy text');
     }
   };
 
@@ -364,45 +310,23 @@ function SpeechToText() {
   };
 
   const saveTranscript = () => {
-    try {
-      const newTranscript = {
-        id: Date.now(),
-        text: transcript,
-        date: new Date().toISOString(),
-        language: selectedLanguage,
-        stats: { ...stats }
-      };
-      
-      const updatedTranscripts = [newTranscript, ...savedTranscripts];
-      
-      // Check storage limits (5MB is typical for mobile)
-      if (JSON.stringify(updatedTranscripts).length > 4.5 * 1024 * 1024) {
-        setError('Storage limit reached. Please delete some saved transcripts.');
-        return;
-      }
-      
-      setSavedTranscripts(updatedTranscripts);
-      localStorage.setItem('transcripts', JSON.stringify(updatedTranscripts));
-      localStorage.removeItem('draft-transcript');
-      setTranscript('');
-      setInterimResult('');
-    } catch (err) {
-      setError('Failed to save transcript. Storage might be full.');
-    }
+    const newTranscript = {
+      id: Date.now(),
+      text: transcript,
+      date: new Date().toISOString(),
+      language: selectedLanguage,
+      stats: { ...stats }
+    };
+    
+    const updated = [newTranscript, ...savedTranscripts];
+    setSavedTranscripts(updated);
+    localStorage.setItem('transcripts', JSON.stringify(updated));
+    setTranscript('');
+    setInterimResult('');
   };
 
   const exportTranscript = () => {
-    const content = `
-Transcript
-Date: ${format(new Date(), 'PPpp')}
-Language: ${languages.find(l => l.code === selectedLanguage)?.name}
-Words: ${stats.words}
-Characters: ${stats.chars}
-
-${transcript}
-    `.trim();
-
-    const blob = new Blob([content], { type: 'text/plain' });
+    const blob = new Blob([transcript], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -424,37 +348,29 @@ ${transcript}
   };
 
   const getLanguageName = (code) => {
-    const language = languages.find(lang => lang.code === code);
-    return language ? language.name : code;
+    return languages.find(lang => lang.code === code)?.name || code;
   };
 
-  const renderLanguageOptions = () => {
-    return (
-      <>
-        <optgroup label="Nigeria">
-          <option value="en-NG">English (Nigeria)</option>
-          <option value="ha-NG">Hausa</option>
-          <option value="yo-NG">Yorùbá</option>
-          <option value="ig-NG">Igbo</option>
-        </optgroup>
-        <optgroup label="International">
-          <option value="en-US">English (US)</option>
-          <option value="ar-SA">Arabic</option>
-          <option value="es-ES">Spanish</option>
-          <option value="fr-FR">French</option>
-          <option value="de-DE">German</option>
-          <option value="it-IT">Italian</option>
-          <option value="ja-JP">Japanese</option>
-        </optgroup>
-      </>
-    );
-  };
+  const renderLanguageOptions = () => (
+    <>
+      <optgroup label="Nigeria">
+        {languages.filter(l => l.code.endsWith('-NG')).map(lang => (
+          <option key={lang.code} value={lang.code}>{lang.name}</option>
+        ))}
+      </optgroup>
+      <optgroup label="International">
+        {languages.filter(l => !l.code.endsWith('-NG')).map(lang => (
+          <option key={lang.code} value={lang.code}>{lang.name}</option>
+        ))}
+      </optgroup>
+    </>
+  );
 
   return (
     <div className="space-y-4 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-          Speech to Text
+          {isOffline ? 'Offline ' : ''}Speech to Text
         </h1>
         <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
           <select
@@ -467,12 +383,12 @@ ${transcript}
           </select>
           <button
             onClick={toggleListening}
-            disabled={!isMicrophoneAvailable && !isMobile}
             className={`px-4 py-2 rounded-lg ${
               isListening
                 ? 'bg-red-500 hover:bg-red-600'
                 : 'bg-primary-500 hover:bg-primary-600'
             } text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors w-full sm:w-auto`}
+            disabled={!isMicrophoneAvailable && !isMobile}
           >
             {isListening ? (
               <>
@@ -493,9 +409,10 @@ ${transcript}
         <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 mb-4">
           <p>For best results on mobile:</p>
           <ul className="list-disc pl-5 mt-1">
-            <li>Use Chrome or Safari</li>
-            <li>Hold your phone close to your mouth</li>
-            <li>Speak clearly in a quiet environment</li>
+            <li>Use Chrome browser</li>
+            <li>Hold phone close to your mouth</li>
+            <li>Speak clearly in quiet environment</li>
+            {isOffline && <li>Offline mode may have limited accuracy</li>}
           </ul>
         </div>
       )}
@@ -508,7 +425,7 @@ ${transcript}
 
       {copySuccess && (
         <div className="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded relative" role="alert">
-          <span className="block sm:inline">Text copied to clipboard!</span>
+          <span className="block sm:inline">Copied to clipboard!</span>
         </div>
       )}
 
@@ -522,7 +439,7 @@ ${transcript}
 
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
           <div className="text-sm text-gray-600 dark:text-gray-400">
-            Words: {stats.words} | Characters: {stats.chars}
+            Words: {stats.words} | Characters: {stats.chars} | Mode: {isOffline ? 'Offline' : 'Online'}
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -574,7 +491,7 @@ ${transcript}
                       <div className="text-sm text-gray-500">
                         {getLanguageName(saved.language)} | 
                         Words: {saved.stats.words} | 
-                        Characters: {saved.stats.chars}
+                        Chars: {saved.stats.chars}
                       </div>
                     </div>
                     <div className="flex gap-2">
@@ -605,12 +522,4 @@ ${transcript}
   );
 }
 
-// Export the wrapped component
-export default function WrappedSpeechToText() {
-  return (
-    <MobileRecognitionErrorBoundary>
-      <SpeechToText />
-    </MobileRecognitionErrorBoundary>
-  );
-}
-
+export default SpeechToText;

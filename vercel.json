@@ -5,18 +5,9 @@
       "headers": [
         {
           "key": "Permissions-Policy",
-          "value": "microphone=()"
+          "value": "microphone=self"
         }
       ]
-    },
-    {
-      "source": "/api/(.*)",
-      "headers": [
-        {
-          "key": "Permissions-Policy",
-          "value": "microphone=()"
-        }
-        ]
     }
   ],
   "rewrites": [
@@ -24,5 +15,9 @@
       "source": "/api/(.*)",
       "destination": "/"
     }
+  ],
+  "routes": [
+    { "handle": "filesystem" },
+    { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
