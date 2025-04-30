@@ -143,6 +143,7 @@ function SpeechToText() {
   const recognitionRef = useRef(null);
   const mediaStreamRef = useRef(null);
   const offlineRecognizerRef = useRef(null);
+  const debounceTimeoutRef = useRef(null);
 
   // Languages supported
   const languages = [
@@ -161,6 +162,11 @@ function SpeechToText() {
 
   // Cleanup all recognition resources
   const cleanupRecognition = useCallback(() => {
+    if (debounceTimeoutRef.current) {
+      clearTimeout(debounceTimeoutRef.current);
+      debounceTimeoutRef.current = null;
+    }
+    
     if (offlineRecognizerRef.current) {
       offlineRecognizerRef.current.stop();
       offlineRecognizerRef.current = null;
@@ -229,10 +235,19 @@ function SpeechToText() {
       offlineRecognizerRef.current = new OfflineSpeechRecognizer(selectedLanguage);
       
       offlineRecognizerRef.current.addListener('result', ({ interimTranscript, finalTranscript }) => {
-        setInterimResult(interimTranscript);
-        if (finalTranscript) {
-          setTranscript(prev => prev + ' ' + finalTranscript);
+        if (debounceTimeoutRef.current) {
+          clearTimeout(debounceTimeoutRef.current);
         }
+        
+        debounceTimeoutRef.current = setTimeout(() => {
+          // Only show the latest interim result
+          setInterimResult(interimTranscript);
+          
+          // Append final results only
+          if (finalTranscript) {
+            setTranscript(prev => prev + (prev ? ' ' : '') + finalTranscript.trim());
+          }
+        }, 100); // 100ms debounce
       });
       
       offlineRecognizerRef.current.addListener('error', ({ error }) => {
@@ -254,22 +269,38 @@ function SpeechToText() {
       recognition.lang = selectedLanguage;
 
       recognition.onresult = (event) => {
-        let interim = '';
-        let final = '';
+        if (debounceTimeoutRef.current) {
+          clearTimeout(debounceTimeoutRef.current);
+        }
         
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            final += transcript + ' ';
-          } else {
-            interim += transcript;
+        debounceTimeoutRef.current = setTimeout(() => {
+          let latestInterim = '';
+          let newFinal = '';
+          
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const result = event.results[i];
+            const transcript = result[0].transcript;
+            
+            if (result.isFinal) {
+              newFinal += transcript + ' ';
+            } else {
+              latestInterim = transcript; // Only keep the latest interim
+            }
           }
-        }
-        
-        setInterimResult(interim);
-        if (final) {
-          setTranscript(prev => prev + ' ' + final);
-        }
+          
+          // Update UI
+          setInterimResult(latestInterim);
+          
+          if (newFinal) {
+            setTranscript(prev => {
+              const newText = prev + (prev ? ' ' : '') + newFinal.trim();
+              // Add period if the phrase sounds complete (optional sentence detection)
+              return /^(I|you|we|they|he|she|it)/i.test(newFinal.trim()) ? 
+                newText + '.' : 
+                newText;
+            });
+          }
+        }, 100); // 100ms debounce
       };
 
       recognition.onerror = (event) => {
@@ -298,6 +329,10 @@ function SpeechToText() {
       cleanupRecognition();
       return;
     }
+
+    // Reset transcript when starting new session
+    setTranscript('');
+    setInterimResult('');
 
     // Request microphone permission
     try {
@@ -462,7 +497,11 @@ function SpeechToText() {
         <div className="min-h-[200px] mb-4">
           <p className="text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
             {transcript}
-            <span className="text-gray-500 italic">{interimResult}</span>
+            {interimResult && (
+              <span className="text-gray-500 italic">
+                {transcript ? ' ' : ''}{interimResult}
+              </span>
+            )}
           </p>
         </div>
 
@@ -552,3 +591,6 @@ function SpeechToText() {
 }
 
 export default SpeechToText;
+
+
+
