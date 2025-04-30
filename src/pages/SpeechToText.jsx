@@ -1,6 +1,44 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { format } from 'date-fns';
 
+// Add this component
+function MobileRecognitionErrorBoundary({ children }) {
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    const listener = () => {
+      if (window.innerWidth <= 768) {
+        setHasError(!('webkitSpeechRecognition' in window));
+      }
+    };
+    listener();
+    window.addEventListener('resize', listener);
+    return () => window.removeEventListener('resize', listener);
+  }, []);
+
+  if (hasError) {
+    return (
+      <div className="mobile-error p-4 bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700">
+        <h3 className="font-bold">Mobile Compatibility Notice</h3>
+        <p>For best results on your device:</p>
+        <ol className="list-decimal pl-5 mt-1">
+          <li>Use Chrome browser</li>
+          <li>Ensure microphone permissions are granted</li>
+          <li>Refresh the page after granting permissions</li>
+        </ol>
+        <button 
+          onClick={() => window.location.reload()}
+          className="mt-2 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+        >
+          Refresh Browser
+        </button>
+      </div>
+    );
+  }
+
+  return children;
+}
+
 function SpeechToText() {
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
@@ -95,8 +133,10 @@ function SpeechToText() {
 
   // Initialize speech recognition - improved version
   const initializeSpeechRecognition = useCallback(() => {
-    if (!('SpeechRecognition' in window) && !('webkitSpeechRecognition' in window)) {
-      setError('Speech recognition is not supported in this browser. Please try Chrome or Safari.');
+    // Add this check first
+    if (typeof window === 'undefined' || 
+        !(window.SpeechRecognition || window.webkitSpeechRecognition)) {
+      setError('Speech API not available in this environment');
       return null;
     }
 
@@ -107,13 +147,14 @@ function SpeechToText() {
         recognition.onend = null;
         recognition.onresult = null;
         recognition.onerror = null;
+        recognition.onabort = null;
       }
 
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       const newRecognition = new SpeechRecognition();
       
-      // Mobile-friendly configuration
-      newRecognition.continuous = true;
+      // Mobile-specific configuration
+      newRecognition.continuous = false; // Changed from true to false for mobile
       newRecognition.interimResults = true;
       newRecognition.lang = selectedLanguage;
       newRecognition.maxAlternatives = 1;
@@ -121,6 +162,19 @@ function SpeechToText() {
       newRecognition.onstart = () => {
         setIsListening(true);
         setError(null);
+      };
+
+      // Add abort handler
+      newRecognition.onabort = () => {
+        if (isListening) { // Only restart if we should be listening
+          setTimeout(() => {
+            try {
+              newRecognition.start();
+            } catch (e) {
+              console.log("Restart after abort failed", e);
+            }
+          }, 300);
+        }
       };
 
       newRecognition.onerror = (event) => {
@@ -222,6 +276,18 @@ function SpeechToText() {
   }, [selectedLanguage, initializeSpeechRecognition, stopMicrophone, recognition, isListening]);
 
   const toggleListening = async () => {
+    // Add mobile-specific pre-checks
+    if (isMobile) {
+      try {
+        // This triggers the permission dialog if needed
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(track => track.stop());
+      } catch (err) {
+        setError('Microphone access denied. Please enable in browser settings.');
+        return;
+      }
+    }
+
     // If currently listening, stop everything
     if (isListening) {
       setIsListening(false);
@@ -539,11 +605,12 @@ ${transcript}
   );
 }
 
-export default SpeechToText;
-
-
-
-
-
-
+// Export the wrapped component
+export default function WrappedSpeechToText() {
+  return (
+    <MobileRecognitionErrorBoundary>
+      <SpeechToText />
+    </MobileRecognitionErrorBoundary>
+  );
+}
 
